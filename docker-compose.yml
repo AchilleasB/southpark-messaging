@@ -1,0 +1,72 @@
+version: '3.8'
+
+services:
+  # 1. RabbitMQ Broker 
+  rabbitmq:
+    image: rabbitmq:3-management # <<< Uses the official image with Management UI
+    container_name: rabbitmq
+    ports:
+      - "5672:5672" # Standard AMQP Port
+      - "15672:15672" # Management UI Port
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 15s
+      retries: 20
+      start_period: 90s
+
+  # 2. REDIS (The Caching/Message Store for the Web App)
+  redis:
+    image: redis:6-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+
+  # 3. Go API Service (Producer - Publishes to RabbitMQ)
+  go-api:
+    build:
+      context: ./go-api-service 
+    container_name: go-api
+    ports:
+      - "8081:8081"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/ 
+
+  # 4. Python Consumer (Listener - Reads from RabbitMQ, Writes to Redis)
+  python-consumer:
+    build:
+      context: ./python-consumer 
+    container_name: python-consumer
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      REDIS_URL: redis://redis:6379/0
+      REDIS_KEY: southpark_messages
+    restart: unless-stopped
+
+  # 5. STREAMLIT WEB APP (Display - Reads from Redis, Serves HTML)
+  streamlit-web-app:
+    build:
+      context: ./streamlit-web-app
+    container_name: streamlit-web-app
+    ports:
+      - "8501:8501"
+    depends_on:
+      redis:
+        condition: service_started
+      go-api:
+        condition: service_started
+    environment:
+      GO_API_URL: http://go-api:8081
+      REDIS_URL: redis://redis:6379/0
+      REDIS_KEY: southpark_messages
